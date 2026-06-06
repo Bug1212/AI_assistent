@@ -173,30 +173,27 @@ def ask_jarvis(user_input: str) -> str:
     resp = groq_client.chat.completions.create(
         model=config.GROQ_MODEL,
         messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history[-20:],
-        temperature=0.3,
-        max_tokens=700
+        temperature=0.8,
+        max_tokens=800
     )
     reply = resp.choices[0].message.content.strip()
     history.append({"role": "assistant", "content": reply})
     return reply
 
 def ask_jarvis_with_context(user_input: str, context: str) -> str:
-    """Search result ke baad JARVIS se answer generate karo"""
-    prompt = f"""User ne poocha: "{user_input}"
-
-Search results:
-{context}
-
-Yeh results dekh ke user ko direct, useful answer do Hinglish mein. 
-Short rakho, important points highlight karo. Ek follow-up question allowed hai end mein."""
+    """Search ke baad — same personality, history ke saath answer do"""
+    # Search result ko history mein daalo taaki context mile
+    enriched = f"{user_input}\n\n[Search results mila hai]:\n{context}"
+    history.append({"role": "user", "content": enriched})
     resp = groq_client.chat.completions.create(
         model=config.GROQ_MODEL,
-        messages=[{"role": "system", "content": SYSTEM_PROMPT},
-                  {"role": "user", "content": prompt}],
-        temperature=0.3,
-        max_tokens=500
+        messages=[{"role": "system", "content": SYSTEM_PROMPT}] + history[-20:],
+        temperature=0.8,
+        max_tokens=800
     )
-    return resp.choices[0].message.content.strip()
+    reply = resp.choices[0].message.content.strip()
+    history.append({"role": "assistant", "content": reply})
+    return reply
 
 # ─────────────────────────────────────────
 # ACTION HANDLER
@@ -313,16 +310,43 @@ def handle_action(reply: str, original_input: str = "") -> tuple:
 # ─────────────────────────────────────────
 # PROCESS COMMAND
 # ─────────────────────────────────────────
+def transliterate_to_roman(text: str) -> str:
+    """Agar response mein Hindi/Devanagari script hai toh Groq se Roman Hinglish mein convert karo"""
+    hindi_chars = sum(1 for c in text if '\u0900' <= c <= '\u097F')
+    if hindi_chars < 5:
+        return text  # Already Roman, skip
+
+    try:
+        resp = groq_client.chat.completions.create(
+            model=config.GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a transliterator. Convert any Devanagari/Hindi script text into Roman script Hinglish. Keep the meaning same, just change the script. Do not translate to English — keep it Hinglish. Return only the converted text, nothing else."},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.1,
+            max_tokens=800
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception:
+        # Fallback: strip Devanagari chars
+        clean = re.sub(r'[\u0900-\u097F]+', '', text)
+        return re.sub(r'\s+', ' ', clean).strip()
+
 def process_command(user_input: str, via_voice: bool = False) -> str:
     try:
         reply = ask_jarvis(user_input)
         table, msg = handle_action(reply, user_input)
+
+        # Force Roman Hinglish — no Hindi script in terminal or voice
+        msg = transliterate_to_roman(msg)
+
         if table:
             console.print(table)
         console.print(f"\n[bold cyan]JARVIS:[/bold cyan] {msg}\n")
         if via_voice:
-            clean = re.sub(r'[^\x00-\x7F]+', '', msg)
-            speak(clean[:250], silent=False)
+            clean = re.sub(r'[^\x00-\x7F]+', ' ', msg)
+            clean = re.sub(r'\s+', ' ', clean).strip()
+            speak(clean[:300], silent=False)
         return msg
     except Exception as e:
         err = f"Error: {e}"
